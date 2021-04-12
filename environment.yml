@@ -1,4 +1,4 @@
-name: tml-unsup
+name: mathematical-downstream
 channels:
   - defaults
 dependencies:
