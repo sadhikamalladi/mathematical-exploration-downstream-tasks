@@ -160,14 +160,18 @@ def load_data(hps):
     return (tr_d, tr_y), (te_d, te_y)
 
 def load_model_and_tokenizer(hps):
-    logger.info(f'Loading model and tokenizer from {hps.model}')
+    logger.info(f'Loading model and tokenizer from {hps.model_name}')
     model = AutoModelWithLMHead.from_pretrained(hps.model)
     tokenizer = AutoTokenizer.from_pretrained(hps.model)
     if 'bert' in hps.model:
+        assert not hps.untied, 'Not clear what untied model means for BERT'
         tokenizer.eos_token = tokenizer.pad_token
         W = model.cls.predictions.decoder.weight.detach().numpy()
     else:
-        W = model.lm_head.weight.detach().numpy()
+        if hps.untied:
+            W = model.Phi.weight.detach().numpy()
+        else:
+            W = model.lm_head.weight.detach().numpy()
     if torch.cuda.is_available():
         model = model.cuda()
     else:
@@ -189,7 +193,7 @@ def load_or_generate_embs(hps):
     Phi = None
 
     ### f
-    path = os.path.join(hps.output_dir, f'{hps.model}_f{prompt_str}.pkl')
+    path = os.path.join(hps.output_dir, f'{hps.model_name}_f{prompt_str}.pkl')
     if os.path.exists(path):
         logger.info(f'Loading f embeddings{prompt_msg} from {path}')
         all_data = pkl.load(open(path, 'rb'))
@@ -206,7 +210,7 @@ def load_or_generate_embs(hps):
             tr_x.append(emb_fn(tr_d[i:i + bs], model, tokenizer, prompt=prompt))
 
             if i%5000 == 0:
-                np.save(f'{hps.model}_fpartial', tr_x)
+                np.save(f'{hps.model_name}_fpartial', tr_x)
 
         te_x = []
         for i in tqdm(range(0, len(te_d), bs)):
@@ -246,7 +250,7 @@ def load_or_generate_embs(hps):
     tr_Phip = None
     tr_p = None
     if hps.run_p:
-        path = os.path.join(hps.output_dir, f'{hps.model}_pf{prompt_str}.pkl')
+        path = os.path.join(hps.output_dir, f'{hps.model_name}_pf{prompt_str}.pkl')
         if os.path.exists(path):
             logger.info(f'Loading p_f embeddings{prompt_msg} from {path}')
             all_data = pkl.load(open(path, 'rb'))
@@ -266,7 +270,7 @@ def load_or_generate_embs(hps):
         embs['p_f'] = ((tr_p, tr_y), (te_p, te_y))
 
     ### Phi p
-    path = os.path.join(hps.output_dir, f'{hps.model}_Phipf{prompt_str}.pkl')
+    path = os.path.join(hps.output_dir, f'{hps.model_name}_Phipf{prompt_str}.pkl')
     if os.path.exists(path):
         logger.info(f'Loading Phi p_f embeddings{prompt_msg} from {path}')
         all_data = pkl.load(open(path, 'rb'))
@@ -293,8 +297,8 @@ def load_or_generate_embs(hps):
 
     if hps.run_projections:
         ### A p (random projection)
-        path = os.path.join(hps.output_dir, f'{hps.model}_Apf{prompt_str}.pkl')
-        A_path = os.path.join(hps.output_dir, f'{hps.model}_A{prompt_str}.pkl')
+        path = os.path.join(hps.output_dir, f'{hps.model_name}_Apf{prompt_str}.pkl')
+        A_path = os.path.join(hps.output_dir, f'{hps.model_name}_A{prompt_str}.pkl')
         if os.path.exists(path):
             logger.info(f'Loading A p_f embeddings{prompt_msg} from {path}')
             all_data = pkl.load(open(path, 'rb'))
@@ -431,7 +435,9 @@ parser = ArgumentParser()
 parser.add_argument('--data_dir', '-d', type=str,
                     default='/n/fs/ptml/datasets/nlp_tasks/')
 parser.add_argument('--model', '-m', type=str, default='gpt2',
-                    help='Path to model saved using HF save_pretrained(). Pass gpt2 for pre-trained GPT-2 model')
+                    help='Path to model saved using HF. Pass gpt2 for pre-trained GPT-2 model, bert-base-cased for BERT model')
+parser.add_argument('--untied', default=False, action='store_true',
+                    help='If Phi and the input word embeddings are untied. Defaults to False. Set to false for standard models, true for custom models (e.g. Quad)')
 parser.add_argument('--task', '-t', type=str, required=True,
                     help=f'Task to test on')
 parser.add_argument('--prompt', '-p', default=False, action='store_true',
@@ -452,6 +458,17 @@ parser.add_argument('--k_fold', '-k', type=int, default=5,
 
 hps = parser.parse_args()
 
+if os.path.exists(hps.model):
+    logger.info('The model you have specified is a custom local checkpoint, not a pretrained HF model')
+    # corresponds to {folder containing run}_{checkpoint ID}
+    if hps.model[-1] == '/':
+        hps.model = hps.model[:-1] # strip off trailing slash
+    new_path = '_'.join(hps.model.split('/')[-2:])
+    logger.info(f'Will refer to this model as {new_path}')
+    hps.model_name = new_path
+else:
+    hps.model_name = hps.model
+    
 if hps.output_dir == '':
     hps.output_dir = os.path.join(hps.data_dir, hps.task)
 assert os.path.exists(os.path.join(hps.data_dir, hps.task)), 'cannot find task in data dir'
@@ -498,7 +515,7 @@ for k in results.keys():
         print(f'{k}: {results[k]}')
 
 prompt_str = '_prompt' if hps.prompt else ''
-path = os.path.join(hps.output_dir, f'{hps.model}_clf_results{prompt_str}.pkl')
+path = os.path.join(hps.output_dir, f'{hps.model_name}_clf_results{prompt_str}.pkl')
 if os.path.exists(path):
     old_results = pkl.load(open(path, 'rb'))
     old_results.update(results)
